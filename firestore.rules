@@ -1,0 +1,205 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profileHasRole(role) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+    function isAdmin() { return signedIn() && (request.auth.token.role == 'admin' || profileHasRole('admin')); }
+    function isClient() { return signedIn() && (request.auth.token.role == 'client' || profileHasRole('client')); }
+    function owns(uid) { return signedIn() && request.auth.uid == uid; }
+    function validAvailability() {
+      return request.resource.data.keys().hasOnly(['weekday', 'enabled', 'startTime', 'endTime', 'slotMinutes', 'updatedAt'])
+        && request.resource.data.weekday is int
+        && request.resource.data.weekday >= 0
+        && request.resource.data.weekday <= 6
+        && request.resource.data.enabled is bool
+        && request.resource.data.startTime is string
+        && request.resource.data.startTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && request.resource.data.endTime is string
+        && request.resource.data.endTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && request.resource.data.startTime < request.resource.data.endTime
+        && request.resource.data.slotMinutes in [30, 45, 60, 90]
+        && request.resource.data.updatedAt is timestamp;
+    }
+    function validPublicInquiry(inquiryId) {
+      return request.resource.data.keys().hasOnly([
+          'type', 'name', 'email', 'phone', 'company', 'service', 'preferredDate',
+          'preferredTime', 'consultationType', 'details', 'status', 'createdAt'
+        ])
+        && request.resource.data.type in ['consultation', 'quote', 'contact']
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 100
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 200
+        && request.resource.data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 40
+        && request.resource.data.company is string
+        && request.resource.data.company.size() <= 160
+        && request.resource.data['service'] is string
+        && request.resource.data['service'].size() <= 160
+        && request.resource.data.preferredDate is string
+        && request.resource.data.preferredTime is string
+        && request.resource.data.consultationType is string
+        && request.resource.data.consultationType.size() <= 60
+        && request.resource.data.details is string
+        && request.resource.data.details.size() <= 4000
+        && (request.resource.data.type == 'consultation' || request.resource.data.details.size() >= 4)
+        && request.resource.data.status == 'new'
+        && request.resource.data.createdAt is timestamp
+        && (request.resource.data.type != 'consultation' || (
+          request.resource.data['service'].size() > 0
+          && request.resource.data.preferredDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          && request.resource.data.preferredTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+          && existsAfter(/databases/$(database)/documents/bookingDays/$(request.resource.data.preferredDate)/slots/$(request.resource.data.preferredTime))
+          && getAfter(/databases/$(database)/documents/bookingDays/$(request.resource.data.preferredDate)/slots/$(request.resource.data.preferredTime)).data.inquiryId == inquiryId
+        ));
+    }
+
+    match /availability/{weekday} {
+      allow read: if true;
+      allow create, update: if isAdmin() && validAvailability();
+      allow delete: if false;
+    }
+
+    match /inquiries/{inquiryId} {
+      allow read: if isAdmin() || (isClient() && resource.data.clientId == request.auth.uid);
+      allow create: if validPublicInquiry(inquiryId);
+      allow update, delete: if isAdmin();
+    }
+
+    match /bookingSlots/{slotId} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /bookingDays/{date}/slots/{time} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if request.resource.data.keys().hasOnly(['inquiryId', 'preferredDate', 'preferredTime', 'status', 'createdAt'])
+        && request.resource.data.inquiryId is string
+        && request.resource.data.preferredDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.preferredTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && request.resource.data.preferredDate == date
+        && request.resource.data.preferredTime == time
+        && request.resource.data.status == 'reserved'
+        && request.resource.data.createdAt is timestamp
+        && existsAfter(/databases/$(database)/documents/inquiries/$(request.resource.data.inquiryId))
+        && getAfter(/databases/$(database)/documents/inquiries/$(request.resource.data.inquiryId)).data.type == 'consultation'
+        && getAfter(/databases/$(database)/documents/inquiries/$(request.resource.data.inquiryId)).data.preferredDate == request.resource.data.preferredDate
+        && getAfter(/databases/$(database)/documents/inquiries/$(request.resource.data.inquiryId)).data.preferredTime == request.resource.data.preferredTime;
+      allow update, delete: if isAdmin();
+    }
+
+    match /users/{uid} {
+      allow read: if isAdmin() || owns(uid);
+      allow update: if owns(uid)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.email == resource.data.email;
+      allow create, delete: if false;
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAdmin() || (isClient() && resource.data.ownerId == request.auth.uid);
+      allow create: if isClient()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.type in ['service_request', 'message'];
+      allow update, delete: if isAdmin();
+    }
+
+    match /documents/{documentId} {
+      allow read: if isAdmin() || (isClient() && resource.data.ownerId == request.auth.uid);
+      allow create: if isClient()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.storageMode == 'firestore-chunks'
+        && request.resource.data.status == 'uploading'
+        && request.resource.data.size > 0
+        && request.resource.data.size <= 10 * 1024 * 1024
+        && request.resource.data.chunkCount > 0
+        && request.resource.data.chunkCount <= 18;
+      allow update: if isAdmin() || (isClient()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.status == 'uploading'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'uploadedChunks'])
+        && request.resource.data.status == 'received'
+        && request.resource.data.uploadedChunks == resource.data.chunkCount);
+      allow delete: if isAdmin() || (isClient()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.status == 'uploading');
+
+      match /chunks/{chunkId} {
+        function parentDocument() {
+          return get(/databases/$(database)/documents/documents/$(documentId));
+        }
+        allow read: if isAdmin() || (isClient()
+          && parentDocument().data.ownerId == request.auth.uid
+          && parentDocument().data.status == 'received');
+        allow create: if isClient()
+          && parentDocument().data.ownerId == request.auth.uid
+          && parentDocument().data.status == 'uploading'
+          && request.resource.data.keys().hasOnly(['index', 'data'])
+          && request.resource.data.index is int
+          && request.resource.data.index >= 0
+          && request.resource.data.index < parentDocument().data.chunkCount
+          && request.resource.data.data is bytes
+          && request.resource.data.data.size() <= 600 * 1024;
+        allow delete: if isAdmin() || (isClient()
+          && parentDocument().data.ownerId == request.auth.uid
+          && parentDocument().data.status == 'uploading');
+        allow update: if false;
+      }
+    }
+
+    match /invoices/{invoiceId} {
+      allow read: if isAdmin() || (isClient() && resource.data.clientId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    match /calls/{callId} {
+      allow read: if isAdmin() || (isClient() && resource.data.clientId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    match /websiteVisits/{visitId} {
+      allow read: if isAdmin();
+      allow create: if request.resource.data.keys().hasOnly([
+          'visitorId', 'sessionId', 'path', 'referrer', 'source', 'medium',
+          'campaign', 'device', 'createdAt'
+        ])
+        && request.resource.data.visitorId is string
+        && request.resource.data.visitorId.matches('^[a-zA-Z0-9-]{20,64}$')
+        && request.resource.data.sessionId is string
+        && request.resource.data.sessionId.matches('^[a-zA-Z0-9-]{20,64}$')
+        && request.resource.data.path is string
+        && request.resource.data.path.size() > 0
+        && request.resource.data.path.size() <= 250
+        && request.resource.data.referrer is string
+        && request.resource.data.referrer.size() <= 200
+        && request.resource.data.source is string
+        && request.resource.data.source.size() > 0
+        && request.resource.data.source.size() <= 100
+        && request.resource.data.medium is string
+        && request.resource.data.medium.size() <= 100
+        && request.resource.data.campaign is string
+        && request.resource.data.campaign.size() <= 100
+        && request.resource.data.device in ['desktop', 'tablet', 'mobile']
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    match /websiteVisitors/{visitorId} {
+      allow read: if isAdmin();
+      allow create: if request.resource.data.keys().hasOnly(['visitorId', 'createdAt'])
+        && request.resource.data.visitorId == visitorId
+        && request.resource.data.visitorId.matches('^[a-zA-Z0-9-]{20,64}$')
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if false;
+    }
+  }
+}

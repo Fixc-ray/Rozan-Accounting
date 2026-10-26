@@ -1,0 +1,55 @@
+export type Role = "admin" | "client";
+export type WorkspaceUser = { uid: string; name: string; email: string; role: Role };
+export type Submission = {
+  id: string;
+  source: "inquiry" | "client";
+  type: string;
+  name: string;
+  email: string;
+  company?: string;
+  service?: string;
+  preferredDate?: string;
+  preferredTime?: string;
+  details?: string;
+  status: string;
+  createdAt: number;
+  clientId?: string;
+};
+export type DocumentRow = {
+  id: string;
+  ownerId: string;
+  fileName: string;
+  category: string;
+  status: string;
+  size: number;
+  contentType: string;
+  chunkCount: number;
+  storageMode: "firestore-chunks" | "legacy-storage";
+  createdAt: number;
+};
+export type Invoice = { id: string; clientId: string; invoiceNumber: string; service: string; amountCents: number; dueDate: string; status: string; createdAt: number };
+export type Profile = { userId: string; email: string; fullName: string; company?: string; phone?: string };
+export type AvailabilityRule = { weekday: number; enabled: boolean; startTime: string; endTime: string; slotMinutes: number };
+export type CallSession = { id: string; clientId: string; clientName: string; roomName: string; status: string; createdAt: number };
+export type WebsiteVisit = {
+  id: string;
+  visitorId: string;
+  sessionId: string;
+  path: string;
+  referrer: string;
+  source: string;
+  medium: string;
+  campaign: string;
+  device: "desktop" | "tablet" | "mobile";
+  createdAt: number;
+};
+export type PortalData = {
+  metrics: Record<string, number>;
+  submissions: Submission[];
+  documents: DocumentRow[];
+  invoices: Invoice[];
+  profiles: Profile[];
+  availability: AvailabilityRule[];
+  calls: CallSession[];
+  visits: WebsiteVisit[];
+};
